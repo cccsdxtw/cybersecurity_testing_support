@@ -22,7 +22,7 @@ import 'overlay_tester.dart'; `
 
 ## 顯示 Overlay
 
-OverlayTester.show(
+`OverlayTester.show(
   context: context,
   child: Container(
     color: Colors.black.withOpacity(0.5),
@@ -30,11 +30,11 @@ OverlayTester.show(
       child: CircularProgressIndicator(),
     ),
   ),
-);
+);`
 
 ## 移除 Overlay
 
-OverlayTester.hide();
+`OverlayTester.hide();`
 
 ## 參數說明
 
@@ -48,7 +48,7 @@ OverlayTester.hide();
 ## 範例
 
 // 顯示半透明遮罩 + Loading
-OverlayTester.show(
+`OverlayTester.show(
   context: context,
   child: Container(
     color: Colors.black.withOpacity(0.5),
@@ -56,12 +56,12 @@ OverlayTester.show(
       child: CircularProgressIndicator(),
     ),
   ),
-);
+);`
 
 // 3 秒後自動移除
-Future.delayed(const Duration(seconds: 3), () {
+`Future.delayed(const Duration(seconds: 3), () {
   OverlayTester.hide();
-});
+});`
 
 ## 注意事項
 
