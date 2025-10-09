@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:orientation="vertical"
+    android:padding="20dp"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <Button
+        android:id="@+id/btnRequestPermission"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="請求權限(請同意Overlaytester覆蓋的權限)" />
+
+    <Space android:layout_height="12dp" android:layout_width="match_parent"/>
+
+    <Button
+        android:id="@+id/btnShowOverlayFull"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="開啟覆蓋(全畫面)" />
+
+    <Space android:layout_height="8dp" android:layout_width="match_parent"/>
+
+    <Button
+        android:id="@+id/btnShowOverlayPartial"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="開啟覆蓋(部分畫面)" />
+
+    <Space android:layout_height="8dp" android:layout_width="match_parent"/>
+
+    <Button
+        android:id="@+id/btnRemoveOverlay"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="關閉覆蓋" />
+
+    <Space android:layout_height="8dp" android:layout_width="match_parent"/>
+
+    <Button
+        android:id="@+id/btnGuide"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="怎麼使用" />
+
+</LinearLayout>
