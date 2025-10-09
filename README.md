@@ -17,21 +17,24 @@
 
 將 `overlay_tester.dart` 放入你的 Flutter 專案中，然後引入：
 
-`dart
-import 'overlay_tester.dart'; `
+```dart
+import 'overlay_tester.dart';
+
+```
 
 ## 顯示 Overlay
 
 ```dart
 OverlayTester.show(
-context: context,
-child: Container(
-color: Colors.black.withOpacity(0.5),
-child: const Center(
-child: CircularProgressIndicator(),
-),
-),
+  context: context,
+  child: Container(
+    color: Colors.black.withOpacity(0.5),
+    child: const Center(
+      child: CircularProgressIndicator(),
+    ),
+  ),
 );
+
 ```
 
 ## 移除 Overlay
@@ -49,6 +52,7 @@ child: CircularProgressIndicator(),
 
 ## 範例
 
+```dart
 // 顯示半透明遮罩 + Loading
 `OverlayTester.show(
   context: context,
@@ -60,10 +64,14 @@ child: CircularProgressIndicator(),
   ),
 );`
 
+```
+
+```dart
 // 3 秒後自動移除
 `Future.delayed(const Duration(seconds: 3), () {
   OverlayTester.hide();
 });`
+```
 
 ## 注意事項
 
