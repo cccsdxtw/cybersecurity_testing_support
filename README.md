@@ -54,7 +54,7 @@ OverlayTester.show(
 
 ```dart
 // 顯示半透明遮罩 + Loading
-`OverlayTester.show(
+OverlayTester.show(
   context: context,
   child: Container(
     color: Colors.black.withOpacity(0.5),
@@ -62,15 +62,16 @@ OverlayTester.show(
       child: CircularProgressIndicator(),
     ),
   ),
-);`
+);
 
 ```
 
 ```dart
 // 3 秒後自動移除
-`Future.delayed(const Duration(seconds: 3), () {
+Future.delayed(const Duration(seconds: 3), () {
   OverlayTester.hide();
-});`
+});
+
 ```
 
 ## 注意事項
