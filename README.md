@@ -22,15 +22,17 @@ import 'overlay_tester.dart'; `
 
 ## 顯示 Overlay
 
-`OverlayTester.show(
-  context: context,
-  child: Container(
-    color: Colors.black.withOpacity(0.5),
-    child: const Center(
-      child: CircularProgressIndicator(),
-    ),
-  ),
-);`
+```dart
+OverlayTester.show(
+context: context,
+child: Container(
+color: Colors.black.withOpacity(0.5),
+child: const Center(
+child: CircularProgressIndicator(),
+),
+),
+);
+```
 
 ## 移除 Overlay
 
