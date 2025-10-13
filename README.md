@@ -76,9 +76,9 @@ Future.delayed(const Duration(seconds: 3), () {
 
 ## 注意事項
 
-・ Overlay 顯示時，會疊加在當前頁面之上，請注意避免遮擋重要互動元素。
-・ 請確認每次呼叫 show 時對應呼叫 hide，避免多層 Overlay 疊加。
-・ 適合用於快速測試 UI 元件或 Loading 效果，但非正式 Alert/Dialog 替代方案。
+- Overlay 顯示時，會疊加在當前頁面之上，請注意避免遮擋重要互動元素。
+- 請確認每次呼叫 show 時對應呼叫 hide，避免多層 Overlay 疊加。
+- 適合用於快速測試 UI 元件或 Loading 效果，但非正式 Alert/Dialog 替代方案。
 
 ## 授權
 
