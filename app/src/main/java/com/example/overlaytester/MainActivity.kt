@@ -2,6 +2,7 @@ package com.example.overlaytester
 
 import android.content.Intent
 import android.graphics.Color
+import android.hardware.input.InputManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -33,8 +34,18 @@ class MainActivity : ComponentActivity() {
             MaterialTheme {
                 OverlayTesterUI(
                     onRequestPermission = { requestOverlayPermission() },
-                    onShowFull = { showOverlay(fullscreen = true) },
-                    onShowPartial = { showOverlay(fullscreen = false) },
+                    onShowBlockingFull = {
+                        showOverlay(fullscreen = true, touchThrough = false)
+                    },
+                    onShowBlockingPartial = {
+                        showOverlay(fullscreen = false, touchThrough = false)
+                    },
+                    onShowPassThroughFull = {
+                        showOverlay(fullscreen = true, touchThrough = true)
+                    },
+                    onShowPassThroughPartial = {
+                        showOverlay(fullscreen = false, touchThrough = true)
+                    },
                     onRemoveOverlay = { removeOverlay() }
                 )
             }
@@ -57,36 +68,60 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun showOverlay(fullscreen: Boolean) {
+    private fun showOverlay(fullscreen: Boolean, touchThrough: Boolean) {
         removeOverlay()
         if (!Settings.canDrawOverlays(this)) {
             Toast.makeText(this, "請先開啟 overlay 權限", Toast.LENGTH_SHORT).show()
             return
         }
 
-        val root = FrameLayout(this)
-        // 半透明灰底
-        root.setBackgroundColor(Color.argb(120, 0, 0, 0))
+        val modeLabel = buildString {
+            append(if (touchThrough) "遮罩-穿透" else "遮罩-不透")
+            append(if (fullscreen) "(全畫面)" else "(部分)")
+        }
 
-        // 左上角提示文字
+        val root = FrameLayout(this).apply {
+            setBackgroundColor(Color.rgb(0, 0, 0))
+            isClickable = !touchThrough
+            isFocusable = false
+        }
+
         val overlayLabel = android.widget.TextView(this).apply {
-            text = if (fullscreen) "遮蔽(全畫面)" else "遮蔽(部分畫面)"
-            setBackgroundColor(Color.argb(220, 255, 60, 60)) // 紅底
+            text = modeLabel
+            // 不透=紅底、穿透=藍底，方便一眼分辨
+            setBackgroundColor(
+                if (touchThrough) Color.rgb(30, 100, 220) else Color.rgb(255, 60, 60)
+            )
             setTextColor(Color.WHITE)
             setPadding(24, 16, 24, 16)
             textSize = 16f
+            isClickable = false
+            isFocusable = false
         }
-        val lpLabel = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            Gravity.TOP or Gravity.START
-        ).apply {
-            topMargin = 50
-            leftMargin = 30
-        }
-        root.addView(overlayLabel, lpLabel)
+        root.addView(
+            overlayLabel,
+            FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP or Gravity.START
+            ).apply {
+                topMargin = 50
+                leftMargin = 30
+            }
+        )
 
-        // Overlay LayoutParams
+        val flags = if (touchThrough) {
+            // 點擊穿透到下方 App
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        } else {
+            // 攔截遮罩範圍內點擊；部分模式下範圍外仍可點下方
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        }
+
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             if (fullscreen) WindowManager.LayoutParams.MATCH_PARENT else 400,
@@ -94,11 +129,22 @@ class MainActivity : ComponentActivity() {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
                 WindowManager.LayoutParams.TYPE_PHONE,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
-                    WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            flags,
             android.graphics.PixelFormat.TRANSLUCENT
-        )
+        ).apply {
+            // 穿透模式：Android 12+ 必須 window alpha ≤ 系統門檻，否則點擊仍被擋
+            // 不透模式：可較不透明，遮蔽感較強
+            alpha = if (touchThrough) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    val inputManager = getSystemService(INPUT_SERVICE) as InputManager
+                    minOf(0.8f, inputManager.maximumObscuringOpacityForTouch)
+                } else {
+                    0.8f
+                }
+            } else {
+                0.85f
+            }
+        }
 
         if (!fullscreen) {
             layoutParams.gravity = Gravity.TOP
@@ -113,8 +159,6 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-
-
     private fun removeOverlay() {
         overlayView?.let {
             try {
@@ -124,6 +168,7 @@ class MainActivity : ComponentActivity() {
             overlayView = null
         }
     }
+
     override fun onDestroy() {
         removeOverlay()
         super.onDestroy()
@@ -134,8 +179,10 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun OverlayTesterUI(
     onRequestPermission: () -> Unit,
-    onShowFull: () -> Unit,
-    onShowPartial: () -> Unit,
+    onShowBlockingFull: () -> Unit,
+    onShowBlockingPartial: () -> Unit,
+    onShowPassThroughFull: () -> Unit,
+    onShowPassThroughPartial: () -> Unit,
     onRemoveOverlay: () -> Unit
 ) {
     val context = LocalContext.current
@@ -152,25 +199,57 @@ fun OverlayTesterUI(
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            Button(onClick = onRequestPermission) {
-                Text("開啟權限(請同意Overlaytester覆蓋的權限)")
+            Button(
+                onClick = onRequestPermission,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("開啟權限(請同意 Overlay 覆蓋權限)")
             }
-            Button(onClick = onShowFull) {
-                Text("開啟覆蓋(全畫面)")
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
+            Button(
+                onClick = onShowBlockingFull,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("遮罩-不透(全畫面)")
             }
-            Button(onClick = onShowPartial) {
-                Text("開啟覆蓋(部分畫面)")
+            Button(
+                onClick = onShowBlockingPartial,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("遮罩-不透(部分)")
             }
-            Button(onClick = onRemoveOverlay) {
+            Button(
+                onClick = onShowPassThroughFull,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("遮罩-穿透(全畫面)")
+            }
+            Button(
+                onClick = onShowPassThroughPartial,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("遮罩-穿透(部分)")
+            }
+
+            Button(
+                onClick = onRemoveOverlay,
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Text("關閉覆蓋")
             }
-            Button(onClick = {
-                Toast.makeText(
-                    context,
-                    "先開啟權限再覆蓋後，再去原本 App 測試遮蔽偵測",
-                    Toast.LENGTH_LONG
-                ).show()
-            }) {
+
+            Button(
+                onClick = {
+                    Toast.makeText(
+                        context,
+                        "不透=攔截點擊(紅標)；穿透=點得過(藍標，Android12+ alpha≤0.8)。開權限後再測遮蔽偵測。",
+                        Toast.LENGTH_LONG
+                    ).show()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
                 Text("測試說明")
             }
         }
