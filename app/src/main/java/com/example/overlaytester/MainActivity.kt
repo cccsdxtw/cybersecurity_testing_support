@@ -14,9 +14,16 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
+import android.util.TypedValue
 import android.view.Gravity
+import android.view.MotionEvent
+import android.view.View
 import android.view.WindowManager
+import android.widget.Button
 import android.widget.FrameLayout
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -34,20 +41,25 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import com.example.overlaytester.ui.theme.OverlaytesterTheme
 
 class MainActivity : ComponentActivity() {
 
     /** 遮罩本體；穿透模式下另有可點擊的標籤視窗 */
     private var overlayMaskView: FrameLayout? = null
-    private var overlayLabelView: android.view.View? = null
+    private var overlayLabelView: View? = null
+    private var controlPanelView: View? = null
+    private var controlPanelLp: WindowManager.LayoutParams? = null
     private var windowManager: WindowManager? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        WindowCompat.setDecorFitsSystemWindows(window, true)
 
         setContent {
-            MaterialTheme {
+            OverlaytesterTheme(darkTheme = true) {
                 var hasOverlayPermission by remember {
                     mutableStateOf(hasOverlayPermission())
                 }
@@ -57,6 +69,9 @@ class MainActivity : ComponentActivity() {
                 // 與 CaptureService session 同步：已取得 = 這次測試 session 進行中
                 var hasCaptureSession by remember {
                     mutableStateOf(CaptureService.isSessionActive)
+                }
+                var controlPanelOpen by remember {
+                    mutableStateOf(controlPanelView != null)
                 }
 
                 DisposableEffect(Unit) {
@@ -121,6 +136,17 @@ class MainActivity : ComponentActivity() {
                     hasOverlayPermission = hasOverlayPermission,
                     hasNotificationPermission = hasNotificationPermission,
                     hasCaptureSession = hasCaptureSession,
+                    controlPanelOpen = controlPanelOpen,
+                    onToggleControlPanel = {
+                        if (controlPanelView != null) {
+                            hideControlPanel()
+                            controlPanelOpen = false
+                        } else {
+                            if (showControlPanel()) {
+                                controlPanelOpen = true
+                            }
+                        }
+                    },
                     onRequestOverlayPermission = {
                         requestOverlayPermission()
                     },
@@ -128,6 +154,7 @@ class MainActivity : ComponentActivity() {
                         hasOverlayPermission = hasOverlayPermission()
                         hasNotificationPermission = hasNotificationPermission()
                         hasCaptureSession = CaptureService.isSessionActive
+                        controlPanelOpen = controlPanelView != null
                     },
                     onRequestNotificationPermission = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -151,37 +178,6 @@ class MainActivity : ComponentActivity() {
                         }
                         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                         capturePermissionLauncher.launch(mgr.createScreenCaptureIntent())
-                    },
-                    onEndCaptureSession = {
-                        CaptureService.endSession(this@MainActivity)
-                        hasCaptureSession = false
-                        toast("已結束螢幕擷取 session")
-                    },
-                    onShowBlockingFull = {
-                        showOverlay(fullscreen = true, touchThrough = false)
-                    },
-                    onShowBlockingPartial = {
-                        showOverlay(fullscreen = false, touchThrough = false)
-                    },
-                    onShowPassThroughFull = {
-                        showOverlay(fullscreen = true, touchThrough = true)
-                    },
-                    onShowPassThroughPartial = {
-                        showOverlay(fullscreen = false, touchThrough = true)
-                    },
-                    onRemoveOverlay = { removeOverlay() },
-                    onDelayedScreenshot = {
-                        if (!ensureCaptureSession()) return@OverlayTesterUI
-                        CaptureService.startDelayedScreenshot(this@MainActivity)
-                        moveTaskToBack(true)
-                    },
-                    onDelayedRecord = {
-                        if (!ensureCaptureSession()) return@OverlayTesterUI
-                        CaptureService.startDelayedRecord(this@MainActivity)
-                        moveTaskToBack(true)
-                    },
-                    onStopRecord = {
-                        CaptureService.stopRecording(this@MainActivity)
                     }
                 )
             }
