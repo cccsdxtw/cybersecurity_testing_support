@@ -360,6 +360,7 @@ fun OverlayTesterUI(
 ) {
     val scroll = rememberScrollState()
     val context = LocalContext.current
+    var helpDialog by remember { mutableStateOf<HelpDialog?>(null) }
 
     DisposableEffect(context) {
         val activity = context as ComponentActivity
@@ -395,11 +396,16 @@ fun OverlayTesterUI(
             FullWidthButton("遮罩-穿透(部分)", onShowPassThroughPartial)
             FullWidthButton("關閉覆蓋", onRemoveOverlay)
             FullWidthButton("遮罩測試說明") {
-                Toast.makeText(
-                    context,
-                    "不透=攔截點擊(紅標)；穿透=點得過(藍標)。用來測對方 App 的遮蔽偵測。",
-                    Toast.LENGTH_LONG
-                ).show()
+                helpDialog = HelpDialog(
+                    title = "遮罩測試說明",
+                    body = """
+不透＝攔截點擊（紅標）
+穿透＝點擊可透到下方 App（藍標；Android 12+ 需 window alpha≤0.8）
+
+用途：測對方 App 的遮蔽／遮罩偵測。
+先開 Overlay 權限，再開對應遮罩；測完按「關閉覆蓋」。
+                    """.trimIndent()
+                )
             }
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
@@ -436,17 +442,47 @@ fun OverlayTesterUI(
             FullWidthButton("延遲錄影開始 (5秒)", onDelayedRecord)
             FullWidthButton("停止錄影", onStopRecord)
             FullWidthButton("截圖錄影說明") {
-                Toast.makeText(
-                    context,
-                    "先開通知 → 開螢幕擷取（建立 session）→ 可多次延遲截圖／錄影 → 測完按結束螢幕擷取。FLAG_SECURE 常為黑畫面。",
-                    Toast.LENGTH_LONG
-                ).show()
+                helpDialog = HelpDialog(
+                    title = "截圖／錄影說明",
+                    body = """
+1. 先開「通知權限」（前景服務需要）
+2. 再開「螢幕擷取權限」建立這次測試 session
+3. 可多次按延遲截圖／延遲錄影；5 秒內切到目標 App
+4. 錄影中按「停止錄影」存檔；session 仍有效可再測
+5. 測完按「結束螢幕擷取」；之後要再測需重新授權
+
+若對方有 FLAG_SECURE，結果常為黑畫面。
+檔案在 Pictures/Movies/OverlayTester。
+Android 不允許永久授權螢幕擷取，這是系統限制。
+                    """.trimIndent()
+                )
             }
 
             Spacer(modifier = Modifier.height(24.dp))
         }
     }
+
+    helpDialog?.let { dialog ->
+        AlertDialog(
+            onDismissRequest = { helpDialog = null },
+            title = { Text(dialog.title) },
+            text = {
+                Text(
+                    text = dialog.body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    lineHeight = 22.sp
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { helpDialog = null }) {
+                    Text("知道了")
+                }
+            }
+        )
+    }
 }
+
+private data class HelpDialog(val title: String, val body: String)
 
 @Composable
 private fun SectionTitle(text: String) {
