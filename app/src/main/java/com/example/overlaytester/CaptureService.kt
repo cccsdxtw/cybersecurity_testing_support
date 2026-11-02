@@ -51,6 +51,7 @@ class CaptureService : Service() {
 
     private var countdownRunnable: Runnable? = null
     private var isRecording = false
+    private var activeToast: Toast? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -116,12 +117,14 @@ class CaptureService : Service() {
         resultData: Intent
     ) {
         countdownRunnable?.let { mainHandler.removeCallbacks(it) }
+        // 只 toast 一次；倒數改走通知，避免 Toast 排隊拖到截完還在跳「還有 N 秒」
+        val actionName = if (action == ACTION_DELAYED_RECORD) "錄影" else "截圖"
+        toast("${delaySec} 秒後${actionName}，請切到要測的 App")
         var left = delaySec
         val tick = object : Runnable {
             override fun run() {
                 if (left > 0) {
                     updateNotification("倒數 $left 秒…請切到要測的 App")
-                    toast("倒數 $left 秒")
                     left--
                     countdownRunnable = this
                     mainHandler.postDelayed(this, 1000L)
@@ -130,6 +133,7 @@ class CaptureService : Service() {
                     when (action) {
                         ACTION_DELAYED_SCREENSHOT -> {
                             updateNotification("正在截圖…")
+                            toast("開始截圖")
                             workerHandler?.post { captureScreenshot(resultCode, resultData) }
                         }
                         ACTION_DELAYED_RECORD -> {
@@ -521,7 +525,10 @@ class CaptureService : Service() {
 
     private fun toast(msg: String) {
         mainHandler.post {
-            Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
+            activeToast?.cancel()
+            activeToast = Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).also {
+                it.show()
+            }
         }
     }
 
