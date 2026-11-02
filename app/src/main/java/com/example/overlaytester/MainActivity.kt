@@ -2,7 +2,10 @@ package com.example.overlaytester
 
 import android.Manifest
 import android.app.Activity
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.hardware.input.InputManager
@@ -26,18 +29,16 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
     private var overlayView: FrameLayout? = null
     private var windowManager: WindowManager? = null
-
-    /** 螢幕擷取授權結果；用完即清，避免重複使用失效的 Intent */
-    private var captureResultCode: Int = Activity.RESULT_CANCELED
-    private var captureResultData: Intent? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,8 +52,33 @@ class MainActivity : ComponentActivity() {
                 var hasNotificationPermission by remember {
                     mutableStateOf(hasNotificationPermission())
                 }
-                var hasCapturePermission by remember {
-                    mutableStateOf(captureResultData != null)
+                // 與 CaptureService session 同步：已取得 = 這次測試 session 進行中
+                var hasCaptureSession by remember {
+                    mutableStateOf(CaptureService.isSessionActive)
+                }
+
+                DisposableEffect(Unit) {
+                    val receiver = object : BroadcastReceiver() {
+                        override fun onReceive(context: Context?, intent: Intent?) {
+                            hasCaptureSession = intent?.getBooleanExtra(
+                                CaptureService.EXTRA_SESSION_ACTIVE,
+                                false
+                            ) == true || CaptureService.isSessionActive
+                        }
+                    }
+                    val filter = IntentFilter(CaptureService.ACTION_SESSION_CHANGED)
+                    ContextCompat.registerReceiver(
+                        this@MainActivity,
+                        receiver,
+                        filter,
+                        ContextCompat.RECEIVER_NOT_EXPORTED
+                    )
+                    onDispose {
+                        try {
+                            unregisterReceiver(receiver)
+                        } catch (_: Exception) {
+                        }
+                    }
                 }
 
                 val notificationPermissionLauncher = rememberLauncherForActivityResult(
@@ -69,14 +95,22 @@ class MainActivity : ComponentActivity() {
                     ActivityResultContracts.StartActivityForResult()
                 ) { result ->
                     if (result.resultCode == Activity.RESULT_OK && result.data != null) {
-                        captureResultCode = result.resultCode
-                        captureResultData = result.data
-                        hasCapturePermission = true
-                        toast("已取得螢幕擷取權限")
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            !hasNotificationPermission()
+                        ) {
+                            toast("請先開啟通知權限，再開螢幕擷取")
+                            return@rememberLauncherForActivityResult
+                        }
+                        // 立刻建立 session；UI「已取得」= session 進行中（準）
+                        CaptureService.startSession(
+                            this@MainActivity,
+                            result.resultCode,
+                            Intent(result.data)
+                        )
+                        hasCaptureSession = true
+                        toast("已建立擷取 session，測試期間可重複截／錄")
                     } else {
-                        captureResultCode = Activity.RESULT_CANCELED
-                        captureResultData = null
-                        hasCapturePermission = false
+                        hasCaptureSession = CaptureService.isSessionActive
                         toast("未授權螢幕擷取")
                     }
                 }
@@ -84,14 +118,14 @@ class MainActivity : ComponentActivity() {
                 OverlayTesterUI(
                     hasOverlayPermission = hasOverlayPermission,
                     hasNotificationPermission = hasNotificationPermission,
-                    hasCapturePermission = hasCapturePermission,
+                    hasCaptureSession = hasCaptureSession,
                     onRequestOverlayPermission = {
                         requestOverlayPermission()
                     },
                     onRefreshPermissions = {
                         hasOverlayPermission = hasOverlayPermission()
                         hasNotificationPermission = hasNotificationPermission()
-                        hasCapturePermission = captureResultData != null
+                        hasCaptureSession = CaptureService.isSessionActive
                     },
                     onRequestNotificationPermission = {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -102,8 +136,24 @@ class MainActivity : ComponentActivity() {
                         }
                     },
                     onRequestCapturePermission = {
+                        if (CaptureService.isSessionActive) {
+                            toast("擷取 session 已在進行中")
+                            hasCaptureSession = true
+                            return@OverlayTesterUI
+                        }
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            !hasNotificationPermission()
+                        ) {
+                            toast("請先開啟通知權限")
+                            return@OverlayTesterUI
+                        }
                         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                         capturePermissionLauncher.launch(mgr.createScreenCaptureIntent())
+                    },
+                    onEndCaptureSession = {
+                        CaptureService.endSession(this@MainActivity)
+                        hasCaptureSession = false
+                        toast("已結束螢幕擷取 session")
                     },
                     onShowBlockingFull = {
                         showOverlay(fullscreen = true, touchThrough = false)
@@ -119,21 +169,35 @@ class MainActivity : ComponentActivity() {
                     },
                     onRemoveOverlay = { removeOverlay() },
                     onDelayedScreenshot = {
-                        if (startCaptureAction(isRecord = false)) {
-                            hasCapturePermission = false
-                        }
+                        if (!ensureCaptureSession()) return@OverlayTesterUI
+                        CaptureService.startDelayedScreenshot(this@MainActivity)
+                        moveTaskToBack(true)
                     },
                     onDelayedRecord = {
-                        if (startCaptureAction(isRecord = true)) {
-                            hasCapturePermission = false
-                        }
+                        if (!ensureCaptureSession()) return@OverlayTesterUI
+                        CaptureService.startDelayedRecord(this@MainActivity)
+                        moveTaskToBack(true)
                     },
                     onStopRecord = {
-                        CaptureService.stopRecording(this)
+                        CaptureService.stopRecording(this@MainActivity)
                     }
                 )
             }
         }
+    }
+
+    private fun ensureCaptureSession(): Boolean {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !hasNotificationPermission()
+        ) {
+            toast("請先開啟通知權限")
+            return false
+        }
+        if (!CaptureService.isSessionActive) {
+            toast("請先開啟螢幕擷取權限（建立 session）")
+            return false
+        }
+        return true
     }
 
     private fun hasOverlayPermission(): Boolean {
@@ -166,37 +230,6 @@ class MainActivity : ComponentActivity() {
         } else {
             toast("此 Android 版本無需額外權限")
         }
-    }
-
-    /** @return true 若已成功啟動延遲擷取 */
-    private fun startCaptureAction(isRecord: Boolean): Boolean {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            !hasNotificationPermission()
-        ) {
-            toast("請先開啟通知權限（錄影/截圖前景服務需要）")
-            return false
-        }
-        val data = captureResultData
-        if (data == null) {
-            toast("請先點「開啟螢幕擷取權限」")
-            return false
-        }
-        // MediaProjection token 通常只能用一次，啟動後清掉，下次需重新授權
-        val code = captureResultCode
-        val dataCopy = Intent(data)
-        captureResultData = null
-        captureResultCode = Activity.RESULT_CANCELED
-
-        if (isRecord) {
-            CaptureService.startDelayedRecord(this, code, dataCopy)
-            toast("5 秒後開始錄影，請切到要測的 App")
-        } else {
-            CaptureService.startDelayedScreenshot(this, code, dataCopy)
-            toast("5 秒後截圖，請切到要測的 App")
-        }
-        // 方便切到目標 App
-        moveTaskToBack(true)
-        return true
     }
 
     private fun showOverlay(fullscreen: Boolean, touchThrough: Boolean) {
@@ -310,11 +343,12 @@ class MainActivity : ComponentActivity() {
 fun OverlayTesterUI(
     hasOverlayPermission: Boolean,
     hasNotificationPermission: Boolean,
-    hasCapturePermission: Boolean,
+    hasCaptureSession: Boolean,
     onRequestOverlayPermission: () -> Unit,
     onRefreshPermissions: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
     onRequestCapturePermission: () -> Unit,
+    onEndCaptureSession: () -> Unit,
     onShowBlockingFull: () -> Unit,
     onShowBlockingPartial: () -> Unit,
     onShowPassThroughFull: () -> Unit,
@@ -325,7 +359,7 @@ fun OverlayTesterUI(
     onStopRecord: () -> Unit
 ) {
     val scroll = rememberScrollState()
-    val context = androidx.compose.ui.platform.LocalContext.current
+    val context = LocalContext.current
 
     DisposableEffect(context) {
         val activity = context as ComponentActivity
@@ -352,7 +386,6 @@ fun OverlayTesterUI(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // ── 區塊一：遮罩 ──
             SectionTitle("一、遮罩測試")
             PermissionStatus("Overlay 權限", hasOverlayPermission)
             FullWidthButton("開啟 Overlay 權限", onRequestOverlayPermission)
@@ -371,19 +404,41 @@ fun OverlayTesterUI(
 
             HorizontalDivider(modifier = Modifier.padding(vertical = 8.dp))
 
-            // ── 區塊二：截圖 / 錄影 ──
             SectionTitle("二、截圖 / 錄影測試")
             PermissionStatus("通知權限", hasNotificationPermission)
-            PermissionStatus("螢幕擷取權限", hasCapturePermission)
+            PermissionStatus(
+                label = "螢幕擷取",
+                granted = hasCaptureSession,
+                grantedText = "已取得（測試 session 進行中）",
+                deniedText = "未取得"
+            )
+            if (!hasCaptureSession) {
+                Text(
+                    text = "Android 不允許永久授權螢幕擷取（防背景偷錄）。結束 session、滑掉通知或重開 App 後需再授權一次；授權後同一輪測試可一直截／錄。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            } else {
+                Text(
+                    text = "目前 session 有效：可重複延遲截圖／錄影。測完請按「結束螢幕擷取」。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                    lineHeight = 18.sp,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
             FullWidthButton("開啟通知權限", onRequestNotificationPermission)
             FullWidthButton("開啟螢幕擷取權限", onRequestCapturePermission)
+            FullWidthButton("結束螢幕擷取", onEndCaptureSession)
             FullWidthButton("延遲截圖 (5秒)", onDelayedScreenshot)
             FullWidthButton("延遲錄影開始 (5秒)", onDelayedRecord)
             FullWidthButton("停止錄影", onStopRecord)
             FullWidthButton("截圖錄影說明") {
                 Toast.makeText(
                     context,
-                    "先開通知+螢幕擷取權限 → 延遲截圖/錄影 → 5秒內切到目標 App。若對方有 FLAG_SECURE，結果常為黑畫面。檔案在 Pictures/Movies/OverlayTester。每次擷取後需重新授權螢幕擷取。",
+                    "先開通知 → 開螢幕擷取（建立 session）→ 可多次延遲截圖／錄影 → 測完按結束螢幕擷取。FLAG_SECURE 常為黑畫面。",
                     Toast.LENGTH_LONG
                 ).show()
             }
@@ -406,9 +461,14 @@ private fun SectionTitle(text: String) {
 }
 
 @Composable
-private fun PermissionStatus(label: String, granted: Boolean) {
+private fun PermissionStatus(
+    label: String,
+    granted: Boolean,
+    grantedText: String = "已取得",
+    deniedText: String = "未取得"
+) {
     Text(
-        text = "$label：${if (granted) "已取得" else "未取得"}",
+        text = "$label：${if (granted) grantedText else deniedText}",
         style = MaterialTheme.typography.bodyMedium,
         color = if (granted) {
             MaterialTheme.colorScheme.primary

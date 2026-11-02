@@ -35,7 +35,8 @@ import java.util.Date
 import java.util.Locale
 
 /**
- * 用 MediaProjection 做延遲截圖 / 錄影，方便測對方 App 的 FLAG_SECURE 等防護。
+ * 螢幕擷取 session：授權一次後可重複延遲截圖／錄影，直到「結束螢幕擷取」。
+ * [isSessionActive] 與 UI「螢幕擷取權限」狀態一致。
  */
 class CaptureService : Service() {
 
@@ -64,41 +65,56 @@ class CaptureService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
-            ACTION_STOP_RECORDING -> {
-                stopRecordingAndSave()
-                return START_NOT_STICKY
-            }
-            ACTION_CANCEL -> {
-                cleanupAll()
-                stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf()
-                return START_NOT_STICKY
-            }
-            ACTION_DELAYED_SCREENSHOT, ACTION_DELAYED_RECORD -> {
+            ACTION_START_SESSION -> {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
-                val resultData = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    intent.getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
-                } else {
-                    @Suppress("DEPRECATION")
-                    intent.getParcelableExtra(EXTRA_RESULT_DATA)
-                }
-                val delaySec = intent.getIntExtra(EXTRA_DELAY_SEC, DEFAULT_DELAY_SEC)
+                val resultData = intent.resultDataExtra()
                 if (resultData == null) {
-                    toast("缺少螢幕擷取授權，請先點「開啟螢幕擷取權限」")
-                    stopSelf()
+                    toast("缺少螢幕擷取授權")
+                    endSessionAndStop()
                     return START_NOT_STICKY
                 }
-                startAsForeground(isRecord = intent.action == ACTION_DELAYED_RECORD)
-                startCountdown(delaySec, intent.action!!, resultCode, resultData)
+                startAsForeground("螢幕擷取 session 進行中")
+                if (!openSession(resultCode, resultData)) {
+                    toast("無法建立擷取 session")
+                    endSessionAndStop()
+                } else {
+                    toast("擷取 session 已開始，可重複截圖／錄影")
+                    updateNotification("擷取 session 進行中（可重複截／錄）")
+                }
+            }
+            ACTION_DELAYED_SCREENSHOT, ACTION_DELAYED_RECORD -> {
+                if (!isSessionActive || mediaProjection == null) {
+                    toast("請先開啟螢幕擷取權限（建立 session）")
+                    return START_NOT_STICKY
+                }
+                if (isRecording) {
+                    toast("請先停止錄影再操作")
+                    return START_NOT_STICKY
+                }
+                val delaySec = intent.getIntExtra(EXTRA_DELAY_SEC, DEFAULT_DELAY_SEC)
+                startCountdown(delaySec, intent.action!!)
+            }
+            ACTION_STOP_RECORDING -> {
+                stopRecordingAndSave(keepSession = true)
+            }
+            ACTION_END_SESSION, ACTION_CANCEL -> {
+                endSessionAndStop()
             }
         }
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
-    private fun startAsForeground(isRecord: Boolean) {
-        val notification = buildNotification(
-            if (isRecord) "準備延遲錄影…" else "準備延遲截圖…"
-        )
+    private fun Intent.resultDataExtra(): Intent? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            getParcelableExtra(EXTRA_RESULT_DATA, Intent::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            getParcelableExtra(EXTRA_RESULT_DATA)
+        }
+    }
+
+    private fun startAsForeground(content: String) {
+        val notification = buildNotification(content)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForeground(
                 NOTIFICATION_ID,
@@ -110,14 +126,32 @@ class CaptureService : Service() {
         }
     }
 
-    private fun startCountdown(
-        delaySec: Int,
-        action: String,
-        resultCode: Int,
-        resultData: Intent
-    ) {
+    private fun openSession(resultCode: Int, resultData: Intent): Boolean {
+        cleanupDisplay()
+        try {
+            mediaProjection?.stop()
+        } catch (_: Exception) {
+        }
+        mediaProjection = null
+
+        val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
+        val projection = mgr.getMediaProjection(resultCode, resultData) ?: return false
+        projection.registerCallback(object : MediaProjection.Callback() {
+            override fun onStop() {
+                mainHandler.post {
+                    // 使用者從系統關掉擷取，或系統回收 → session 結束，UI 會變未取得
+                    toast("螢幕擷取已被系統結束")
+                    endSessionAndStop()
+                }
+            }
+        }, mainHandler)
+        mediaProjection = projection
+        setSessionActive(true)
+        return true
+    }
+
+    private fun startCountdown(delaySec: Int, action: String) {
         countdownRunnable?.let { mainHandler.removeCallbacks(it) }
-        // 只 toast 一次；倒數改走通知，避免 Toast 排隊拖到截完還在跳「還有 N 秒」
         val actionName = if (action == ACTION_DELAYED_RECORD) "錄影" else "截圖"
         toast("${delaySec} 秒後${actionName}，請切到要測的 App")
         var left = delaySec
@@ -134,11 +168,11 @@ class CaptureService : Service() {
                         ACTION_DELAYED_SCREENSHOT -> {
                             updateNotification("正在截圖…")
                             toast("開始截圖")
-                            workerHandler?.post { captureScreenshot(resultCode, resultData) }
+                            workerHandler?.post { captureScreenshot() }
                         }
                         ACTION_DELAYED_RECORD -> {
-                            updateNotification("錄影中…點通知可停止")
-                            workerHandler?.post { startRecording(resultCode, resultData) }
+                            updateNotification("錄影中…可按停止錄影")
+                            workerHandler?.post { startRecording() }
                         }
                     }
                 }
@@ -146,23 +180,6 @@ class CaptureService : Service() {
         }
         countdownRunnable = tick
         mainHandler.post(tick)
-    }
-
-    private fun obtainProjection(resultCode: Int, resultData: Intent): MediaProjection? {
-        mediaProjection?.stop()
-        mediaProjection = null
-        val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        val projection = mgr.getMediaProjection(resultCode, resultData) ?: return null
-        projection.registerCallback(object : MediaProjection.Callback() {
-            override fun onStop() {
-                mainHandler.post {
-                    if (isRecording) stopRecordingAndSave()
-                    cleanupDisplay()
-                }
-            }
-        }, mainHandler)
-        mediaProjection = projection
-        return projection
     }
 
     private fun screenMetrics(): Triple<Int, Int, Int> {
@@ -179,19 +196,19 @@ class CaptureService : Service() {
         }
     }
 
-    private fun captureScreenshot(resultCode: Int, resultData: Intent) {
+    private fun captureScreenshot() {
         try {
-            val projection = obtainProjection(resultCode, resultData)
+            val projection = mediaProjection
             if (projection == null) {
-                toast("無法取得 MediaProjection")
-                finishService()
+                toast("擷取 session 已失效，請重新授權")
+                endSessionAndStop()
                 return
             }
             val (width, height, density) = screenMetrics()
-            // 對齊偶數，部分裝置較穩
             val w = width and 1.inv()
             val h = height and 1.inv()
 
+            cleanupDisplay()
             imageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
             virtualDisplay = projection.createVirtualDisplay(
                 "overlaytester-shot",
@@ -204,7 +221,6 @@ class CaptureService : Service() {
                 workerHandler
             )
 
-            // 等幾幀再抓，避免黑圖
             Thread.sleep(400)
             var image = imageReader?.acquireLatestImage()
             if (image == null) {
@@ -212,11 +228,11 @@ class CaptureService : Service() {
                 image = imageReader?.acquireLatestImage()
             }
             if (image == null) {
-                toast("截圖失敗：沒拿到畫面（可能被 FLAG_SECURE 擋）")
                 cleanupDisplay()
-                projection.stop()
-                mediaProjection = null
-                finishService()
+                mainHandler.post {
+                    toast("截圖失敗：沒拿到畫面（可能被 FLAG_SECURE 擋）")
+                    updateNotification("擷取 session 進行中（可重複截／錄）")
+                }
                 return
             }
 
@@ -224,46 +240,43 @@ class CaptureService : Service() {
             image.close()
             val uriOrPath = saveBitmap(bitmap)
             bitmap.recycle()
-
             cleanupDisplay()
-            projection.stop()
-            mediaProjection = null
 
             mainHandler.post {
                 toast(
-                    if (uriOrPath != null) "截圖已存：${uriOrPath}"
+                    if (uriOrPath != null) "截圖已存（session 仍有效，可再截）"
                     else "截圖儲存失敗"
                 )
-                finishService()
+                updateNotification("擷取 session 進行中（可重複截／錄）")
             }
         } catch (e: Exception) {
+            cleanupDisplay()
             mainHandler.post {
                 toast("截圖失敗: ${e.message}")
-                cleanupAll()
-                finishService()
+                updateNotification("擷取 session 進行中（可重複截／錄）")
             }
         }
     }
 
-    private fun startRecording(resultCode: Int, resultData: Intent) {
+    private fun startRecording() {
         try {
             if (isRecording) return
-            val projection = obtainProjection(resultCode, resultData)
+            val projection = mediaProjection
             if (projection == null) {
-                toast("無法取得 MediaProjection")
-                finishService()
+                toast("擷取 session 已失效，請重新授權")
+                endSessionAndStop()
                 return
             }
             val (width, height, density) = screenMetrics()
             var w = width and 1.inv()
             var h = height and 1.inv()
-            // 過大解析度在部分機型會 prepare 失敗，上限約 1080p 寬
             if (w > 1080) {
                 val scale = 1080f / w
                 w = 1080
                 h = (h * scale).toInt() and 1.inv()
             }
 
+            cleanupDisplay()
             val outFile = createMovieFile()
             recordingFile = outFile
 
@@ -297,19 +310,26 @@ class CaptureService : Service() {
             recorder.start()
             isRecording = true
             mainHandler.post {
-                updateNotification("錄影中…點此停止")
+                updateNotification("錄影中…按「停止錄影」結束這段")
                 toast("開始錄影")
             }
         } catch (e: Exception) {
+            cleanupDisplay()
+            try {
+                mediaRecorder?.reset()
+                mediaRecorder?.release()
+            } catch (_: Exception) {
+            }
+            mediaRecorder = null
+            isRecording = false
             mainHandler.post {
                 toast("錄影開始失敗: ${e.message}")
-                cleanupAll()
-                finishService()
+                updateNotification("擷取 session 進行中（可重複截／錄）")
             }
         }
     }
 
-    private fun stopRecordingAndSave() {
+    private fun stopRecordingAndSave(keepSession: Boolean) {
         if (!isRecording) {
             toast("目前沒有在錄影")
             return
@@ -326,10 +346,7 @@ class CaptureService : Service() {
                 }
                 mediaRecorder = null
                 isRecording = false
-
                 cleanupDisplay()
-                mediaProjection?.stop()
-                mediaProjection = null
 
                 val file = recordingFile
                 val saved = if (file != null && file.exists()) {
@@ -338,16 +355,20 @@ class CaptureService : Service() {
 
                 mainHandler.post {
                     toast(
-                        if (saved != null) "錄影已存：$saved"
-                        else "錄影儲存失敗（若畫面全黑，可能被 FLAG_SECURE 擋）"
+                        if (saved != null) {
+                            if (keepSession) "錄影已存（session 仍有效，可再錄）"
+                            else "錄影已存：$saved"
+                        } else {
+                            "錄影儲存失敗（若畫面全黑，可能被 FLAG_SECURE 擋）"
+                        }
                     )
-                    finishService()
+                    if (keepSession && isSessionActive) {
+                        updateNotification("擷取 session 進行中（可重複截／錄）")
+                    }
                 }
             } catch (e: Exception) {
                 mainHandler.post {
                     toast("停止錄影失敗: ${e.message}")
-                    cleanupAll()
-                    finishService()
                 }
             }
         }
@@ -374,7 +395,10 @@ class CaptureService : Service() {
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, name)
                 put(MediaStore.Images.Media.MIME_TYPE, "image/png")
-                put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/OverlayTester")
+                put(
+                    MediaStore.Images.Media.RELATIVE_PATH,
+                    Environment.DIRECTORY_PICTURES + "/OverlayTester"
+                )
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
             val resolver = contentResolver
@@ -427,7 +451,6 @@ class CaptureService : Service() {
             values.clear()
             values.put(MediaStore.Video.Media.IS_PENDING, 0)
             resolver.update(uri, values, null, null)
-            // 已進相簿可刪 app 私有複本
             file.delete()
             uri.toString()
         } else {
@@ -475,7 +498,11 @@ class CaptureService : Service() {
         mediaProjection = null
     }
 
-    private fun finishService() {
+    private fun endSessionAndStop() {
+        countdownRunnable?.let { mainHandler.removeCallbacks(it) }
+        countdownRunnable = null
+        cleanupAll()
+        setSessionActive(false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -493,13 +520,16 @@ class CaptureService : Service() {
     }
 
     private fun buildNotification(content: String): Notification {
-        val stopIntent = Intent(this, CaptureService::class.java).apply {
-            action = ACTION_STOP_RECORDING
-        }
-        val stopPending = PendingIntent.getService(
+        val stopRec = PendingIntent.getService(
             this,
             1,
-            stopIntent,
+            Intent(this, CaptureService::class.java).apply { action = ACTION_STOP_RECORDING },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        val endSession = PendingIntent.getService(
+            this,
+            2,
+            Intent(this, CaptureService::class.java).apply { action = ACTION_END_SESSION },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         val openApp = PendingIntent.getActivity(
@@ -513,7 +543,8 @@ class CaptureService : Service() {
             .setContentText(content)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(openApp)
-            .addAction(0, "停止錄影", stopPending)
+            .addAction(0, "停止錄影", stopRec)
+            .addAction(0, "結束擷取", endSession)
             .setOngoing(true)
             .build()
     }
@@ -533,7 +564,9 @@ class CaptureService : Service() {
     }
 
     override fun onDestroy() {
+        countdownRunnable?.let { mainHandler.removeCallbacks(it) }
         cleanupAll()
+        setSessionActive(false)
         workerThread?.quitSafely()
         workerThread = null
         workerHandler = null
@@ -541,10 +574,15 @@ class CaptureService : Service() {
     }
 
     companion object {
+        const val ACTION_START_SESSION = "com.example.overlaytester.START_SESSION"
         const val ACTION_DELAYED_SCREENSHOT = "com.example.overlaytester.DELAYED_SCREENSHOT"
         const val ACTION_DELAYED_RECORD = "com.example.overlaytester.DELAYED_RECORD"
         const val ACTION_STOP_RECORDING = "com.example.overlaytester.STOP_RECORDING"
+        const val ACTION_END_SESSION = "com.example.overlaytester.END_SESSION"
         const val ACTION_CANCEL = "com.example.overlaytester.CANCEL"
+
+        const val ACTION_SESSION_CHANGED = "com.example.overlaytester.SESSION_CHANGED"
+        const val EXTRA_SESSION_ACTIVE = "session_active"
 
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
@@ -554,12 +592,23 @@ class CaptureService : Service() {
         private const val CHANNEL_ID = "capture_channel"
         private const val NOTIFICATION_ID = 42
 
-        fun startDelayedScreenshot(context: Context, resultCode: Int, data: Intent, delaySec: Int = DEFAULT_DELAY_SEC) {
+        @Volatile
+        var isSessionActive: Boolean = false
+            private set
+
+        private fun CaptureService.setSessionActive(active: Boolean) {
+            isSessionActive = active
+            sendBroadcast(
+                Intent(ACTION_SESSION_CHANGED).setPackage(packageName)
+                    .putExtra(EXTRA_SESSION_ACTIVE, active)
+            )
+        }
+
+        fun startSession(context: Context, resultCode: Int, data: Intent) {
             val intent = Intent(context, CaptureService::class.java).apply {
-                action = ACTION_DELAYED_SCREENSHOT
+                action = ACTION_START_SESSION
                 putExtra(EXTRA_RESULT_CODE, resultCode)
                 putExtra(EXTRA_RESULT_DATA, data)
-                putExtra(EXTRA_DELAY_SEC, delaySec)
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -568,25 +617,36 @@ class CaptureService : Service() {
             }
         }
 
-        fun startDelayedRecord(context: Context, resultCode: Int, data: Intent, delaySec: Int = DEFAULT_DELAY_SEC) {
+        fun startDelayedScreenshot(context: Context, delaySec: Int = DEFAULT_DELAY_SEC) {
             val intent = Intent(context, CaptureService::class.java).apply {
-                action = ACTION_DELAYED_RECORD
-                putExtra(EXTRA_RESULT_CODE, resultCode)
-                putExtra(EXTRA_RESULT_DATA, data)
+                action = ACTION_DELAYED_SCREENSHOT
                 putExtra(EXTRA_DELAY_SEC, delaySec)
             }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                context.startForegroundService(intent)
-            } else {
-                context.startService(intent)
+            context.startService(intent)
+        }
+
+        fun startDelayedRecord(context: Context, delaySec: Int = DEFAULT_DELAY_SEC) {
+            val intent = Intent(context, CaptureService::class.java).apply {
+                action = ACTION_DELAYED_RECORD
+                putExtra(EXTRA_DELAY_SEC, delaySec)
             }
+            context.startService(intent)
         }
 
         fun stopRecording(context: Context) {
-            val intent = Intent(context, CaptureService::class.java).apply {
-                action = ACTION_STOP_RECORDING
-            }
-            context.startService(intent)
+            context.startService(
+                Intent(context, CaptureService::class.java).apply {
+                    action = ACTION_STOP_RECORDING
+                }
+            )
+        }
+
+        fun endSession(context: Context) {
+            context.startService(
+                Intent(context, CaptureService::class.java).apply {
+                    action = ACTION_END_SESSION
+                }
+            )
         }
     }
 }
