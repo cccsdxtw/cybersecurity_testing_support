@@ -1,3 +1,4 @@
 <resources>
     <string name="app_name">overlaytester</string>
+    <string name="float_panel_drag_handle">功能\n（拖曳移動）</string>
 </resources>

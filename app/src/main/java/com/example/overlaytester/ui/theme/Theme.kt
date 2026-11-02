@@ -47,8 +47,12 @@ fun OverlaytesterTheme(
     if (!view.isInEditMode) {
         SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.surface.toArgb()
-            window.navigationBarColor = colorScheme.surface.toArgb()
+            @Suppress("DEPRECATION")
+            run {
+                // API 35+ 標記 deprecated，仍用於統一深色狀態列／導覽列底色
+                window.statusBarColor = colorScheme.surface.toArgb()
+                window.navigationBarColor = colorScheme.surface.toArgb()
+            }
             val insets = WindowCompat.getInsetsController(window, view)
             insets.isAppearanceLightStatusBars = !darkTheme
             insets.isAppearanceLightNavigationBars = !darkTheme

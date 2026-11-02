@@ -10,7 +10,6 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.hardware.input.InputManager
 import android.media.projection.MediaProjectionManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -41,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
 import com.example.overlaytester.ui.theme.OverlaytesterTheme
 
@@ -271,11 +271,7 @@ class MainActivity : ComponentActivity() {
         return true
     }
 
-    private fun hasOverlayPermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            Settings.canDrawOverlays(this)
-        } else true
-    }
+    private fun hasOverlayPermission(): Boolean = Settings.canDrawOverlays(this)
 
     private fun hasNotificationPermission(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -287,19 +283,15 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun requestOverlayPermission() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.canDrawOverlays(this)) {
-                startActivity(
-                    Intent(
-                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                        Uri.parse("package:$packageName")
-                    )
+        if (!Settings.canDrawOverlays(this)) {
+            startActivity(
+                Intent(
+                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                    "package:$packageName".toUri()
                 )
-            } else {
-                toast("已取得 Overlay 權限")
-            }
+            )
         } else {
-            toast("此 Android 版本無需額外權限")
+            toast("已取得 Overlay 權限")
         }
     }
 
@@ -309,6 +301,7 @@ class MainActivity : ComponentActivity() {
         resources.displayMetrics
     ).toInt()
 
+    @Suppress("DEPRECATION")
     private fun overlayType(): Int =
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
@@ -407,7 +400,7 @@ class MainActivity : ComponentActivity() {
         }
         // 只有這塊文字可拖；右側短鈕不綁拖曳，避免和滑動打架
         val dragHandle = TextView(this).apply {
-            text = "功能\n（拖曳移動）"
+            setText(R.string.float_panel_drag_handle)
             gravity = Gravity.CENTER_HORIZONTAL
             textAlignment = View.TEXT_ALIGNMENT_CENTER
             setTextColor(textColor)
@@ -554,7 +547,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun snapToEdge(lp: WindowManager.LayoutParams, view: View) {
-        val (screenW, screenH) = screenSize()
+        val (screenW, _) = screenSize()
         val viewW = if (view.width > 0) view.width else if (lp.width > 0) lp.width else dp(56)
         val viewH = if (view.height > 0) view.height else if (lp.height > 0) lp.height else dp(56)
         val centerX = lp.x + viewW / 2
@@ -675,10 +668,7 @@ class MainActivity : ComponentActivity() {
             append(" · 點我關閉")
         }
 
-        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-        else
-            WindowManager.LayoutParams.TYPE_PHONE
+        val overlayType = overlayType()
 
         val maskAlpha = if (touchThrough) {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -722,7 +712,7 @@ class MainActivity : ComponentActivity() {
         }
 
         // 四種模式都用獨立可點標籤，座標固定與「不透（部分）」相同
-        val closeLabel = android.widget.TextView(this).apply {
+        val closeLabel = TextView(this).apply {
             text = modeLabel
             setBackgroundColor(
                 if (touchThrough) Color.rgb(30, 100, 220) else Color.rgb(255, 60, 60)
