@@ -37,7 +37,9 @@ import androidx.core.content.ContextCompat
 
 class MainActivity : ComponentActivity() {
 
-    private var overlayView: FrameLayout? = null
+    /** 遮罩本體；穿透模式下另有可點擊的標籤視窗 */
+    private var overlayMaskView: FrameLayout? = null
+    private var overlayLabelView: android.view.View? = null
     private var windowManager: WindowManager? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -239,41 +241,41 @@ class MainActivity : ComponentActivity() {
             return
         }
 
+        // 標籤位置統一對齊「不透（部分）」：部分遮罩頂 y=200 + 內距 50、左 30
+        val partialMaskY = 200
+        val partialMaskHeight = 400
+        val labelX = 30
+        val labelY = partialMaskY + 50
+
         val modeLabel = buildString {
             append(if (touchThrough) "遮罩-穿透" else "遮罩-不透")
             append(if (fullscreen) "(全畫面)" else "(部分)")
+            append(" · 點我關閉")
         }
 
-        val root = FrameLayout(this).apply {
+        val overlayType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_PHONE
+
+        val maskAlpha = if (touchThrough) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                val inputManager = getSystemService(INPUT_SERVICE) as InputManager
+                minOf(0.8f, inputManager.maximumObscuringOpacityForTouch)
+            } else {
+                0.8f
+            }
+        } else {
+            0.85f
+        }
+
+        val mask = FrameLayout(this).apply {
             setBackgroundColor(Color.rgb(0, 0, 0))
             isClickable = !touchThrough
             isFocusable = false
         }
 
-        val overlayLabel = android.widget.TextView(this).apply {
-            text = modeLabel
-            setBackgroundColor(
-                if (touchThrough) Color.rgb(30, 100, 220) else Color.rgb(255, 60, 60)
-            )
-            setTextColor(Color.WHITE)
-            setPadding(24, 16, 24, 16)
-            textSize = 16f
-            isClickable = false
-            isFocusable = false
-        }
-        root.addView(
-            overlayLabel,
-            FrameLayout.LayoutParams(
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                FrameLayout.LayoutParams.WRAP_CONTENT,
-                Gravity.TOP or Gravity.START
-            ).apply {
-                topMargin = 50
-                leftMargin = 30
-            }
-        )
-
-        val flags = if (touchThrough) {
+        val maskFlags = if (touchThrough) {
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -283,49 +285,70 @@ class MainActivity : ComponentActivity() {
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
         }
 
-        val layoutParams = WindowManager.LayoutParams(
+        val maskLp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
-            if (fullscreen) WindowManager.LayoutParams.MATCH_PARENT else 400,
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
-                WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
-            else
-                WindowManager.LayoutParams.TYPE_PHONE,
-            flags,
+            if (fullscreen) WindowManager.LayoutParams.MATCH_PARENT else partialMaskHeight,
+            overlayType,
+            maskFlags,
             android.graphics.PixelFormat.TRANSLUCENT
         ).apply {
-            alpha = if (touchThrough) {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    val inputManager = getSystemService(INPUT_SERVICE) as InputManager
-                    minOf(0.8f, inputManager.maximumObscuringOpacityForTouch)
-                } else {
-                    0.8f
-                }
-            } else {
-                0.85f
+            alpha = maskAlpha
+            if (!fullscreen) {
+                gravity = Gravity.TOP
+                y = partialMaskY
             }
         }
 
-        if (!fullscreen) {
-            layoutParams.gravity = Gravity.TOP
-            layoutParams.y = 200
+        // 四種模式都用獨立可點標籤，座標固定與「不透（部分）」相同
+        val closeLabel = android.widget.TextView(this).apply {
+            text = modeLabel
+            setBackgroundColor(
+                if (touchThrough) Color.rgb(30, 100, 220) else Color.rgb(255, 60, 60)
+            )
+            setTextColor(Color.WHITE)
+            setPadding(24, 16, 24, 16)
+            textSize = 16f
+            isClickable = true
+            isFocusable = false
+            setOnClickListener { removeOverlay() }
+        }
+        val labelLp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = labelX
+            y = labelY
+            alpha = 0.99f
         }
 
-        overlayView = root
         try {
-            windowManager?.addView(root, layoutParams)
+            windowManager?.addView(mask, maskLp)
+            overlayMaskView = mask
+            windowManager?.addView(closeLabel, labelLp)
+            overlayLabelView = closeLabel
         } catch (e: Exception) {
+            removeOverlay()
             toast("建立 overlay 失敗: ${e.message}")
         }
     }
 
     private fun removeOverlay() {
-        overlayView?.let {
-            try {
-                windowManager?.removeViewImmediate(it)
-            } catch (_: Exception) {
+        listOf(overlayLabelView, overlayMaskView).forEach { view ->
+            view?.let {
+                try {
+                    windowManager?.removeViewImmediate(it)
+                } catch (_: Exception) {
+                }
             }
-            overlayView = null
         }
+        overlayLabelView = null
+        overlayMaskView = null
     }
 
     private fun toast(msg: String) {
