@@ -91,8 +91,12 @@ class CaptureService : Service() {
                     toast("請先停止錄影再操作")
                     return START_NOT_STICKY
                 }
-                val delaySec = intent.getIntExtra(EXTRA_DELAY_SEC, DEFAULT_DELAY_SEC)
-                startCountdown(delaySec, intent.action!!)
+                val delaySec = intent.getIntExtra(EXTRA_DELAY_SEC, 0)
+                if (delaySec > 0) {
+                    startCountdown(delaySec, intent.action!!)
+                } else {
+                    runCaptureNow(intent.action!!)
+                }
             }
             ACTION_STOP_RECORDING -> {
                 stopRecordingAndSave(keepSession = true)
@@ -164,22 +168,30 @@ class CaptureService : Service() {
                     mainHandler.postDelayed(this, 1000L)
                 } else {
                     countdownRunnable = null
-                    when (action) {
-                        ACTION_DELAYED_SCREENSHOT -> {
-                            updateNotification("正在截圖…")
-                            toast("開始截圖")
-                            workerHandler?.post { captureScreenshot() }
-                        }
-                        ACTION_DELAYED_RECORD -> {
-                            updateNotification("錄影中…可按停止錄影")
-                            workerHandler?.post { startRecording() }
-                        }
-                    }
+                    runCaptureNow(action)
                 }
             }
         }
         countdownRunnable = tick
         mainHandler.post(tick)
+    }
+
+    private fun runCaptureNow(action: String) {
+        countdownRunnable?.let { mainHandler.removeCallbacks(it) }
+        countdownRunnable = null
+        when (action) {
+            ACTION_DELAYED_SCREENSHOT -> {
+                updateNotification("正在截圖…")
+                toast("開始截圖")
+                // 稍等讓浮窗有時間從畫面上移除
+                workerHandler?.postDelayed({ captureScreenshot() }, 250L)
+            }
+            ACTION_DELAYED_RECORD -> {
+                updateNotification("錄影中…可按停止錄影")
+                notifyCaptureEvent(EVENT_RECORD_STARTED)
+                workerHandler?.post { startRecording() }
+            }
+        }
     }
 
     private fun screenMetrics(): Triple<Int, Int, Int> {
@@ -201,6 +213,7 @@ class CaptureService : Service() {
             val projection = mediaProjection
             if (projection == null) {
                 toast("擷取 session 已失效，請重新授權")
+                notifyCaptureEvent(EVENT_SCREENSHOT_DONE)
                 endSessionAndStop()
                 return
             }
@@ -232,6 +245,7 @@ class CaptureService : Service() {
                 mainHandler.post {
                     toast("截圖失敗：沒拿到畫面（可能被 FLAG_SECURE 擋）")
                     updateNotification("擷取 session 進行中（可重複截／錄）")
+                    notifyCaptureEvent(EVENT_SCREENSHOT_DONE)
                 }
                 return
             }
@@ -248,12 +262,14 @@ class CaptureService : Service() {
                     else "截圖儲存失敗"
                 )
                 updateNotification("擷取 session 進行中（可重複截／錄）")
+                notifyCaptureEvent(EVENT_SCREENSHOT_DONE)
             }
         } catch (e: Exception) {
             cleanupDisplay()
             mainHandler.post {
                 toast("截圖失敗: ${e.message}")
                 updateNotification("擷取 session 進行中（可重複截／錄）")
+                notifyCaptureEvent(EVENT_SCREENSHOT_DONE)
             }
         }
     }
@@ -365,13 +381,22 @@ class CaptureService : Service() {
                     if (keepSession && isSessionActive) {
                         updateNotification("擷取 session 進行中（可重複截／錄）")
                     }
+                    notifyCaptureEvent(EVENT_RECORD_STOPPED)
                 }
             } catch (e: Exception) {
                 mainHandler.post {
                     toast("停止錄影失敗: ${e.message}")
+                    notifyCaptureEvent(EVENT_RECORD_STOPPED)
                 }
             }
         }
+    }
+
+    private fun notifyCaptureEvent(event: String) {
+        sendBroadcast(
+            Intent(ACTION_CAPTURE_EVENT).setPackage(packageName)
+                .putExtra(EXTRA_EVENT, event)
+        )
     }
 
     private fun imageToBitmap(image: android.media.Image): Bitmap {
@@ -584,11 +609,17 @@ class CaptureService : Service() {
         const val ACTION_SESSION_CHANGED = "com.example.overlaytester.SESSION_CHANGED"
         const val EXTRA_SESSION_ACTIVE = "session_active"
 
+        const val ACTION_CAPTURE_EVENT = "com.example.overlaytester.CAPTURE_EVENT"
+        const val EXTRA_EVENT = "event"
+        const val EVENT_SCREENSHOT_DONE = "screenshot_done"
+        const val EVENT_RECORD_STARTED = "record_started"
+        const val EVENT_RECORD_STOPPED = "record_stopped"
+
         const val EXTRA_RESULT_CODE = "result_code"
         const val EXTRA_RESULT_DATA = "result_data"
         const val EXTRA_DELAY_SEC = "delay_sec"
-
         const val DEFAULT_DELAY_SEC = 5
+
         private const val CHANNEL_ID = "capture_channel"
         private const val NOTIFICATION_ID = 42
 
@@ -617,20 +648,22 @@ class CaptureService : Service() {
             }
         }
 
-        fun startDelayedScreenshot(context: Context, delaySec: Int = DEFAULT_DELAY_SEC) {
-            val intent = Intent(context, CaptureService::class.java).apply {
-                action = ACTION_DELAYED_SCREENSHOT
-                putExtra(EXTRA_DELAY_SEC, delaySec)
-            }
-            context.startService(intent)
+        fun startScreenshot(context: Context, delaySec: Int = 0) {
+            context.startService(
+                Intent(context, CaptureService::class.java).apply {
+                    action = ACTION_DELAYED_SCREENSHOT
+                    putExtra(EXTRA_DELAY_SEC, delaySec)
+                }
+            )
         }
 
-        fun startDelayedRecord(context: Context, delaySec: Int = DEFAULT_DELAY_SEC) {
-            val intent = Intent(context, CaptureService::class.java).apply {
-                action = ACTION_DELAYED_RECORD
-                putExtra(EXTRA_DELAY_SEC, delaySec)
-            }
-            context.startService(intent)
+        fun startRecord(context: Context, delaySec: Int = 0) {
+            context.startService(
+                Intent(context, CaptureService::class.java).apply {
+                    action = ACTION_DELAYED_RECORD
+                    putExtra(EXTRA_DELAY_SEC, delaySec)
+                }
+            )
         }
 
         fun stopRecording(context: Context) {

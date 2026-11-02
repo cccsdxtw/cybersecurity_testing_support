@@ -51,7 +51,12 @@ class MainActivity : ComponentActivity() {
     private var overlayLabelView: View? = null
     private var controlPanelView: View? = null
     private var controlPanelLp: WindowManager.LayoutParams? = null
+    /** true=展開面板，false=僅圖標；null=完全隱藏（截圖中） */
+    private var controlPanelExpanded: Boolean? = false
+    /** 貼邊側：展開／收合都跟這側，避免右邊收合跑到左邊 */
+    private var controlDockRight: Boolean = true
     private var windowManager: WindowManager? = null
+    private var onControlPanelVisibilityChanged: ((Boolean) -> Unit)? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -75,15 +80,42 @@ class MainActivity : ComponentActivity() {
                 }
 
                 DisposableEffect(Unit) {
+                    onControlPanelVisibilityChanged = { open -> controlPanelOpen = open }
+                    onDispose { onControlPanelVisibilityChanged = null }
+                }
+
+                DisposableEffect(Unit) {
                     val receiver = object : BroadcastReceiver() {
                         override fun onReceive(context: Context?, intent: Intent?) {
-                            hasCaptureSession = intent?.getBooleanExtra(
-                                CaptureService.EXTRA_SESSION_ACTIVE,
-                                false
-                            ) == true || CaptureService.isSessionActive
+                            when (intent?.action) {
+                                CaptureService.ACTION_SESSION_CHANGED -> {
+                                    hasCaptureSession = intent.getBooleanExtra(
+                                        CaptureService.EXTRA_SESSION_ACTIVE,
+                                        false
+                                    ) || CaptureService.isSessionActive
+                                }
+                                CaptureService.ACTION_CAPTURE_EVENT -> {
+                                    when (intent.getStringExtra(CaptureService.EXTRA_EVENT)) {
+                                        CaptureService.EVENT_SCREENSHOT_DONE -> {
+                                            // 截圖結束：浮窗以圖標回來
+                                            showControlFab()
+                                            controlPanelOpen = true
+                                        }
+                                        CaptureService.EVENT_RECORD_STARTED,
+                                        CaptureService.EVENT_RECORD_STOPPED -> {
+                                            // 錄影中／結束都維持圖標
+                                            showControlFab()
+                                            controlPanelOpen = true
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                    val filter = IntentFilter(CaptureService.ACTION_SESSION_CHANGED)
+                    val filter = IntentFilter().apply {
+                        addAction(CaptureService.ACTION_SESSION_CHANGED)
+                        addAction(CaptureService.ACTION_CAPTURE_EVENT)
+                    }
                     ContextCompat.registerReceiver(
                         this@MainActivity,
                         receiver,
@@ -138,11 +170,11 @@ class MainActivity : ComponentActivity() {
                     hasCaptureSession = hasCaptureSession,
                     controlPanelOpen = controlPanelOpen,
                     onToggleControlPanel = {
-                        if (controlPanelView != null) {
+                        if (controlPanelView != null || controlPanelExpanded != null) {
                             hideControlPanel()
                             controlPanelOpen = false
                         } else {
-                            if (showControlPanel()) {
+                            if (showControlFab()) {
                                 controlPanelOpen = true
                             }
                         }
@@ -178,6 +210,47 @@ class MainActivity : ComponentActivity() {
                         }
                         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                         capturePermissionLauncher.launch(mgr.createScreenCaptureIntent())
+                    },
+                    onEndCaptureSession = {
+                        CaptureService.endSession(this@MainActivity)
+                        hasCaptureSession = false
+                        toast("已結束螢幕擷取 session")
+                    },
+                    onShowBlockingFull = {
+                        showOverlay(fullscreen = true, touchThrough = false)
+                    },
+                    onShowBlockingPartial = {
+                        showOverlay(fullscreen = false, touchThrough = false)
+                    },
+                    onShowPassThroughFull = {
+                        showOverlay(fullscreen = true, touchThrough = true)
+                    },
+                    onShowPassThroughPartial = {
+                        showOverlay(fullscreen = false, touchThrough = true)
+                    },
+                    onRemoveOverlay = { removeOverlay() },
+                    onScreenshot = {
+                        if (!ensureCaptureSession()) return@OverlayTesterUI
+                        if (controlPanelView != null) hideControlPanelTemporarily()
+                        // 主畫面：5 秒倒數
+                        CaptureService.startScreenshot(
+                            this@MainActivity,
+                            CaptureService.DEFAULT_DELAY_SEC
+                        )
+                        moveTaskToBack(true)
+                    },
+                    onStartRecord = {
+                        if (!ensureCaptureSession()) return@OverlayTesterUI
+                        if (controlPanelView != null) showControlFab()
+                        // 主畫面：5 秒倒數
+                        CaptureService.startRecord(
+                            this@MainActivity,
+                            CaptureService.DEFAULT_DELAY_SEC
+                        )
+                        moveTaskToBack(true)
+                    },
+                    onStopRecord = {
+                        CaptureService.stopRecording(this@MainActivity)
                     }
                 )
             }
@@ -228,6 +301,359 @@ class MainActivity : ComponentActivity() {
         } else {
             toast("此 Android 版本無需額外權限")
         }
+    }
+
+    private fun dp(value: Int): Int = TypedValue.applyDimension(
+        TypedValue.COMPLEX_UNIT_DIP,
+        value.toFloat(),
+        resources.displayMetrics
+    ).toInt()
+
+    private fun overlayType(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+        else
+            WindowManager.LayoutParams.TYPE_PHONE
+
+    private fun rememberPanelPosition(): Pair<Int, Int> {
+        val lp = controlPanelLp
+        return if (lp != null) lp.x to lp.y else dp(16) to dp(120)
+    }
+
+    private fun detachControlView() {
+        controlPanelView?.let {
+            try {
+                windowManager?.removeViewImmediate(it)
+            } catch (_: Exception) {
+            }
+        }
+        controlPanelView = null
+    }
+
+    /** 只顯示可拖曳圖標；點一下展開功能面板 */
+    private fun showControlFab(): Boolean {
+        if (!hasOverlayPermission()) {
+            toast("請先開啟 Overlay 權限（浮窗需要）")
+            return false
+        }
+        val (_, posY) = rememberPanelPosition()
+        detachControlView()
+
+        val accent = Color.rgb(79, 127, 122)
+        val size = dp(56)
+        val fab = TextView(this).apply {
+            text = "測"
+            gravity = Gravity.CENTER
+            setTextColor(Color.WHITE)
+            textSize = 20f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setBackgroundColor(accent)
+            elevation = dp(8).toFloat()
+            setOnClickListener { showControlPanelExpanded() }
+        }
+
+        val lp = WindowManager.LayoutParams(
+            size,
+            size,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            y = posY
+        }
+        applyDockEdge(lp, size, size)
+        attachDraggable(fab, lp, fab, clickToActivate = true)
+
+        return try {
+            windowManager?.addView(fab, lp)
+            controlPanelView = fab
+            controlPanelLp = lp
+            controlPanelExpanded = false
+            onControlPanelVisibilityChanged?.invoke(true)
+            true
+        } catch (e: Exception) {
+            toast("開啟浮窗失敗: ${e.message}")
+            false
+        }
+    }
+
+    /** 展開功能列表：標題列專責拖曳，下方 ScrollView 只負責滑動 */
+    private fun showControlPanelExpanded(): Boolean {
+        if (!hasOverlayPermission()) {
+            toast("請先開啟 Overlay 權限（浮窗需要）")
+            return false
+        }
+        val (_, posY) = rememberPanelPosition()
+        detachControlView()
+
+        val panelBg = Color.rgb(30, 30, 30)
+        val accent = Color.rgb(79, 127, 122)
+        val textColor = Color.rgb(232, 232, 232)
+        val panelW = dp(260)
+        val panelH = dp(420)
+
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(panelBg)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            elevation = dp(8).toFloat()
+        }
+
+        val titleBar = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+        }
+        // 只有這塊文字可拖；右側短鈕不綁拖曳，避免和滑動打架
+        val dragHandle = TextView(this).apply {
+            text = "功能\n（拖曳移動）"
+            gravity = Gravity.CENTER_HORIZONTAL
+            textAlignment = View.TEXT_ALIGNMENT_CENTER
+            setTextColor(textColor)
+            textSize = 13f
+            setTypeface(typeface, android.graphics.Typeface.BOLD)
+            setLineSpacing(0f, 1.05f)
+            setPadding(0, dp(4), dp(6), dp(4))
+        }
+        titleBar.addView(
+            dragHandle,
+            LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f)
+        )
+        titleBar.addView(
+            panelButton("收", Color.rgb(90, 90, 90)) { showControlFab() },
+            LinearLayout.LayoutParams(dp(40), LinearLayout.LayoutParams.WRAP_CONTENT).apply {
+                marginEnd = dp(6)
+            }
+        )
+        titleBar.addView(
+            panelButton("Ｘ", Color.rgb(120, 60, 60)) { hideControlPanel() },
+            LinearLayout.LayoutParams(dp(40), LinearLayout.LayoutParams.WRAP_CONTENT)
+        )
+        root.addView(
+            titleBar,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT
+            ).apply { bottomMargin = dp(8) }
+        )
+
+        val list = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+        }
+
+        fun addSection(title: String) {
+            list.addView(
+                TextView(this).apply {
+                    text = title
+                    setTextColor(accent)
+                    textSize = 13f
+                    setPadding(0, dp(6), 0, dp(4))
+                }
+            )
+        }
+
+        fun addAction(label: String, action: () -> Unit) {
+            list.addView(
+                panelButton(label, accent, action),
+                LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT
+                ).apply { bottomMargin = dp(6) }
+            )
+        }
+
+        addSection("遮罩")
+        addAction("遮罩-不透(全畫面)") { showOverlay(fullscreen = true, touchThrough = false) }
+        addAction("遮罩-不透(部分)") { showOverlay(fullscreen = false, touchThrough = false) }
+        addAction("遮罩-穿透(全畫面)") { showOverlay(fullscreen = true, touchThrough = true) }
+        addAction("遮罩-穿透(部分)") { showOverlay(fullscreen = false, touchThrough = true) }
+        addAction("關閉覆蓋") { removeOverlay() }
+
+        addSection("截圖 / 錄影")
+        // 浮窗內：立即截／錄（無倒數）
+        addAction("截圖") {
+            if (!ensureCaptureSession()) return@addAction
+            hideControlPanelTemporarily()
+            CaptureService.startScreenshot(this, delaySec = 0)
+        }
+        addAction("開始錄影") {
+            if (!ensureCaptureSession()) return@addAction
+            showControlFab()
+            CaptureService.startRecord(this, delaySec = 0)
+        }
+        addAction("停止錄影") { CaptureService.stopRecording(this) }
+        addAction("結束螢幕擷取") {
+            CaptureService.endSession(this)
+            toast("已結束螢幕擷取 session")
+        }
+
+        val scroll = ScrollView(this).apply {
+            isNestedScrollingEnabled = true
+            addView(
+                list,
+                FrameLayout.LayoutParams(
+                    FrameLayout.LayoutParams.MATCH_PARENT,
+                    FrameLayout.LayoutParams.WRAP_CONTENT
+                )
+            )
+        }
+        root.addView(
+            scroll,
+            LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0,
+                1f
+            )
+        )
+
+        val lp = WindowManager.LayoutParams(
+            panelW,
+            panelH,
+            overlayType(),
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            android.graphics.PixelFormat.TRANSLUCENT
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            y = posY
+        }
+        applyDockEdge(lp, panelW, panelH)
+        // 只綁在「功能（拖曳移動）」文字上
+        attachDraggable(dragHandle, lp, root, clickToActivate = false)
+
+        return try {
+            windowManager?.addView(root, lp)
+            controlPanelView = root
+            controlPanelLp = lp
+            controlPanelExpanded = true
+            onControlPanelVisibilityChanged?.invoke(true)
+            true
+        } catch (e: Exception) {
+            toast("展開浮窗失敗: ${e.message}")
+            false
+        }
+    }
+
+    private fun screenSize(): Pair<Int, Int> {
+        val dm = resources.displayMetrics
+        return dm.widthPixels to dm.heightPixels
+    }
+
+    /** 依記住的左右側貼邊（展開／收合寬度不同也不會跑邊） */
+    private fun applyDockEdge(
+        lp: WindowManager.LayoutParams,
+        viewW: Int,
+        viewH: Int
+    ) {
+        val (screenW, screenH) = screenSize()
+        val w = viewW.coerceAtLeast(1)
+        val h = viewH.coerceAtLeast(1)
+        lp.x = if (controlDockRight) (screenW - w).coerceAtLeast(0) else 0
+        lp.y = lp.y.coerceIn(0, (screenH - h).coerceAtLeast(0))
+    }
+
+    private fun snapToEdge(lp: WindowManager.LayoutParams, view: View) {
+        val (screenW, screenH) = screenSize()
+        val viewW = if (view.width > 0) view.width else if (lp.width > 0) lp.width else dp(56)
+        val viewH = if (view.height > 0) view.height else if (lp.height > 0) lp.height else dp(56)
+        val centerX = lp.x + viewW / 2
+        controlDockRight = centerX >= screenW / 2
+        applyDockEdge(lp, viewW, viewH)
+        try {
+            windowManager?.updateViewLayout(view, lp)
+        } catch (_: Exception) {
+        }
+    }
+
+    /**
+     * @param clickToActivate 圖標模式：沒拖就點擊展開；標題拖曳列則為 false
+     */
+    private fun attachDraggable(
+        handle: View,
+        lp: WindowManager.LayoutParams,
+        targetView: View? = null,
+        clickToActivate: Boolean = true
+    ) {
+        var dragDx = 0f
+        var dragDy = 0f
+        var moved = false
+        val touchSlop = dp(6)
+        handle.setOnTouchListener { v, event ->
+            val movingView = targetView ?: v
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    dragDx = event.rawX - lp.x
+                    dragDy = event.rawY - lp.y
+                    moved = false
+                    true
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val nx = (event.rawX - dragDx).toInt()
+                    val ny = (event.rawY - dragDy).toInt()
+                    if (kotlin.math.abs(nx - lp.x) > touchSlop ||
+                        kotlin.math.abs(ny - lp.y) > touchSlop
+                    ) {
+                        moved = true
+                    }
+                    val (screenW, screenH) = screenSize()
+                    val viewW = if (movingView.width > 0) movingView.width else lp.width
+                    val viewH = if (movingView.height > 0) movingView.height else lp.height
+                    lp.x = nx.coerceIn(0, (screenW - viewW).coerceAtLeast(0))
+                    lp.y = ny.coerceIn(0, (screenH - viewH).coerceAtLeast(0))
+                    try {
+                        windowManager?.updateViewLayout(movingView, lp)
+                    } catch (_: Exception) {
+                    }
+                    true
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (moved) {
+                        snapToEdge(lp, movingView)
+                    } else if (clickToActivate) {
+                        v.performClick()
+                    }
+                    true
+                }
+                else -> false
+            }
+        }
+    }
+
+    private fun panelButton(text: String, bg: Int, onClick: () -> Unit): Button {
+        return Button(this).apply {
+            this.text = text
+            setBackgroundColor(bg)
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            isAllCaps = false
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            setOnClickListener { onClick() }
+        }
+    }
+
+    /** 截圖用：暫時移除浮窗，保留座標，拍完再 showControlFab */
+    private fun hideControlPanelTemporarily() {
+        rememberPanelPosition().let { (x, y) ->
+            if (controlPanelLp == null) {
+                controlPanelLp = WindowManager.LayoutParams().apply {
+                    this.x = x
+                    this.y = y
+                }
+            } else {
+                controlPanelLp?.x = x
+                controlPanelLp?.y = y
+            }
+        }
+        detachControlView()
+        controlPanelExpanded = null
+    }
+
+    private fun hideControlPanel() {
+        detachControlView()
+        controlPanelLp = null
+        controlPanelExpanded = null
+        onControlPanelVisibilityChanged?.invoke(false)
     }
 
     private fun showOverlay(fullscreen: Boolean, touchThrough: Boolean) {
@@ -352,6 +778,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        hideControlPanel()
         removeOverlay()
         super.onDestroy()
     }
@@ -363,6 +790,8 @@ fun OverlayTesterUI(
     hasOverlayPermission: Boolean,
     hasNotificationPermission: Boolean,
     hasCaptureSession: Boolean,
+    controlPanelOpen: Boolean,
+    onToggleControlPanel: () -> Unit,
     onRequestOverlayPermission: () -> Unit,
     onRefreshPermissions: () -> Unit,
     onRequestNotificationPermission: () -> Unit,
@@ -373,8 +802,8 @@ fun OverlayTesterUI(
     onShowPassThroughFull: () -> Unit,
     onShowPassThroughPartial: () -> Unit,
     onRemoveOverlay: () -> Unit,
-    onDelayedScreenshot: () -> Unit,
-    onDelayedRecord: () -> Unit,
+    onScreenshot: () -> Unit,
+    onStartRecord: () -> Unit,
     onStopRecord: () -> Unit
 ) {
     val scroll = rememberScrollState()
@@ -406,6 +835,21 @@ fun OverlayTesterUI(
             verticalArrangement = Arrangement.spacedBy(10.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
+            FullWidthButton(
+                if (controlPanelOpen) "關閉功能浮窗" else "開啟功能浮窗"
+            ) {
+                onToggleControlPanel()
+            }
+            Text(
+                text = "開啟後為「測」圖標（鬆手自動貼邊），點一下展開；展開後只拖「功能（拖曳移動）」移動，下方列表可滑動。截圖時浮窗暫隱，錄影收成圖標。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                lineHeight = 18.sp,
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            HorizontalDivider(modifier = Modifier.padding(vertical = 4.dp))
+
             SectionTitle("一、遮罩測試")
             PermissionStatus("Overlay 權限", hasOverlayPermission)
             FullWidthButton("開啟 Overlay 權限", onRequestOverlayPermission)
@@ -422,7 +866,7 @@ fun OverlayTesterUI(
 穿透＝點擊可透到下方 App（藍標；Android 12+ 需 window alpha≤0.8）
 
 用途：測對方 App 的遮蔽／遮罩偵測。
-先開 Overlay 權限，再開對應遮罩；測完按「關閉覆蓋」。
+可在本頁或「功能浮窗」操作；點標籤或「關閉覆蓋」可關。
                     """.trimIndent()
                 )
             }
@@ -447,7 +891,7 @@ fun OverlayTesterUI(
                 )
             } else {
                 Text(
-                    text = "目前 session 有效：可重複延遲截圖／錄影。測完請按「結束螢幕擷取」。",
+                    text = "目前 session 有效：可在本頁或浮窗重複截圖／錄影。測完按「結束螢幕擷取」。",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                     lineHeight = 18.sp,
@@ -456,23 +900,22 @@ fun OverlayTesterUI(
             }
             FullWidthButton("開啟通知權限", onRequestNotificationPermission)
             FullWidthButton("開啟螢幕擷取權限", onRequestCapturePermission)
-            FullWidthButton("結束螢幕擷取", onEndCaptureSession)
-            FullWidthButton("延遲截圖 (5秒)", onDelayedScreenshot)
-            FullWidthButton("延遲錄影開始 (5秒)", onDelayedRecord)
+            FullWidthButton("延遲截圖 (5秒)", onScreenshot)
+            FullWidthButton("延遲錄影開始 (5秒)", onStartRecord)
             FullWidthButton("停止錄影", onStopRecord)
+            FullWidthButton("結束螢幕擷取", onEndCaptureSession)
             FullWidthButton("截圖錄影說明") {
                 helpDialog = HelpDialog(
                     title = "截圖／錄影說明",
                     body = """
 1. 先開「通知權限」（前景服務需要）
 2. 再開「螢幕擷取權限」建立這次測試 session
-3. 可多次按延遲截圖／延遲錄影；5 秒內切到目標 App
-4. 錄影中按「停止錄影」存檔；session 仍有效可再測
-5. 測完按「結束螢幕擷取」；之後要再測需重新授權
+3. 本頁「延遲截圖／錄影」會倒數 5 秒；浮窗內為立即執行
+4. 若有開浮窗：截圖時浮窗暫隱；錄影時收成圖標
+5. 錄影中按「停止錄影」存檔；測完按「結束螢幕擷取」
 
 若對方有 FLAG_SECURE，結果常為黑畫面。
 檔案在 Pictures/Movies/OverlayTester。
-Android 不允許永久授權螢幕擷取，這是系統限制。
                     """.trimIndent()
                 )
             }
