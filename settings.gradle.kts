@@ -19,6 +19,6 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "overlaytester"
+rootProject.name = "CybersecurityTestingSupport"
 include(":app")
  

@@ -37,7 +37,7 @@ private val LightColorScheme = lightColorScheme(
 )
 
 @Composable
-fun OverlaytesterTheme(
+fun CybersecurityTestingSupportTheme(
     darkTheme: Boolean = true,
     content: @Composable () -> Unit
 ) {

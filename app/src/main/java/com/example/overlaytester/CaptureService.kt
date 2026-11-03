@@ -224,7 +224,7 @@ class CaptureService : Service() {
             cleanupDisplay()
             imageReader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 2)
             virtualDisplay = projection.createVirtualDisplay(
-                "overlaytester-shot",
+                "cts-shot",
                 w,
                 h,
                 density,
@@ -314,7 +314,7 @@ class CaptureService : Service() {
             }
 
             virtualDisplay = projection.createVirtualDisplay(
-                "overlaytester-rec",
+                "cts-rec",
                 w,
                 h,
                 density,
@@ -415,14 +415,14 @@ class CaptureService : Service() {
     }
 
     private fun saveBitmap(bitmap: Bitmap): String? {
-        val name = "OverlayTester_${timestamp()}.png"
+        val name = "CTS_${timestamp()}.png"
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             val values = ContentValues().apply {
                 put(MediaStore.Images.Media.DISPLAY_NAME, name)
                 put(MediaStore.Images.Media.MIME_TYPE, "image/png")
                 put(
                     MediaStore.Images.Media.RELATIVE_PATH,
-                    Environment.DIRECTORY_PICTURES + "/OverlayTester"
+                    Environment.DIRECTORY_PICTURES + "/CybersecurityTestingSupport"
                 )
                 put(MediaStore.Images.Media.IS_PENDING, 1)
             }
@@ -439,7 +439,7 @@ class CaptureService : Service() {
         } else {
             val dir = File(
                 Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
-                "OverlayTester"
+                "CybersecurityTestingSupport"
             )
             if (!dir.exists()) dir.mkdirs()
             val file = File(dir, name)
@@ -451,9 +451,9 @@ class CaptureService : Service() {
     }
 
     private fun createMovieFile(): File {
-        val dir = File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), "OverlayTester")
+        val dir = File(getExternalFilesDir(Environment.DIRECTORY_MOVIES), "CybersecurityTestingSupport")
         if (!dir.exists()) dir.mkdirs()
-        return File(dir, "OverlayTester_${timestamp()}.mp4")
+        return File(dir, "CTS_${timestamp()}.mp4")
     }
 
     private fun publishVideoToGallery(file: File): String? {
@@ -463,7 +463,7 @@ class CaptureService : Service() {
                 put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
                 put(
                     MediaStore.Video.Media.RELATIVE_PATH,
-                    Environment.DIRECTORY_MOVIES + "/OverlayTester"
+                    Environment.DIRECTORY_MOVIES + "/CybersecurityTestingSupport"
                 )
                 put(MediaStore.Video.Media.IS_PENDING, 1)
             }
@@ -564,7 +564,7 @@ class CaptureService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("OverlayTester 擷取")
+            .setContentTitle(getString(R.string.capture_notification_title))
             .setContentText(content)
             .setSmallIcon(android.R.drawable.ic_menu_camera)
             .setContentIntent(openApp)

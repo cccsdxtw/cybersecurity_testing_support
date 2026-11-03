@@ -42,7 +42,7 @@ import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
 import androidx.core.view.WindowCompat
-import com.example.overlaytester.ui.theme.OverlaytesterTheme
+import com.example.overlaytester.ui.theme.CybersecurityTestingSupportTheme
 
 class MainActivity : ComponentActivity() {
 
@@ -64,7 +64,7 @@ class MainActivity : ComponentActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, true)
 
         setContent {
-            OverlaytesterTheme(darkTheme = true) {
+            CybersecurityTestingSupportTheme(darkTheme = true) {
                 var hasOverlayPermission by remember {
                     mutableStateOf(hasOverlayPermission())
                 }
@@ -164,7 +164,7 @@ class MainActivity : ComponentActivity() {
                     }
                 }
 
-                OverlayTesterUI(
+                CybersecurityTestingSupportUI(
                     hasOverlayPermission = hasOverlayPermission,
                     hasNotificationPermission = hasNotificationPermission,
                     hasCaptureSession = hasCaptureSession,
@@ -200,13 +200,13 @@ class MainActivity : ComponentActivity() {
                         if (CaptureService.isSessionActive) {
                             toast("擷取 session 已在進行中")
                             hasCaptureSession = true
-                            return@OverlayTesterUI
+                            return@CybersecurityTestingSupportUI
                         }
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                             !hasNotificationPermission()
                         ) {
                             toast("請先開啟通知權限")
-                            return@OverlayTesterUI
+                            return@CybersecurityTestingSupportUI
                         }
                         val mgr = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
                         capturePermissionLauncher.launch(mgr.createScreenCaptureIntent())
@@ -230,7 +230,7 @@ class MainActivity : ComponentActivity() {
                     },
                     onRemoveOverlay = { removeOverlay() },
                     onScreenshot = {
-                        if (!ensureCaptureSession()) return@OverlayTesterUI
+                        if (!ensureCaptureSession()) return@CybersecurityTestingSupportUI
                         if (controlPanelView != null) hideControlPanelTemporarily()
                         // 主畫面：5 秒倒數
                         CaptureService.startScreenshot(
@@ -240,7 +240,7 @@ class MainActivity : ComponentActivity() {
                         moveTaskToBack(true)
                     },
                     onStartRecord = {
-                        if (!ensureCaptureSession()) return@OverlayTesterUI
+                        if (!ensureCaptureSession()) return@CybersecurityTestingSupportUI
                         if (controlPanelView != null) showControlFab()
                         // 主畫面：5 秒倒數
                         CaptureService.startRecord(
@@ -776,7 +776,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun OverlayTesterUI(
+fun CybersecurityTestingSupportUI(
     hasOverlayPermission: Boolean,
     hasNotificationPermission: Boolean,
     hasCaptureSession: Boolean,
@@ -813,7 +813,7 @@ fun OverlayTesterUI(
 
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("資安測試工具") })
+            TopAppBar(title = { Text("CybersecurityTestingSupport") })
         }
     ) { padding ->
         Column(
@@ -905,7 +905,7 @@ fun OverlayTesterUI(
 5. 錄影中按「停止錄影」存檔；測完按「結束螢幕擷取」
 
 若對方有 FLAG_SECURE，結果常為黑畫面。
-檔案在 Pictures/Movies/OverlayTester。
+檔案在 Pictures/Movies/CybersecurityTestingSupport。
                     """.trimIndent()
                 )
             }

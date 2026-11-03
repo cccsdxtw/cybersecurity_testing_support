@@ -1,4 +1,5 @@
 <resources>
-    <string name="app_name">overlaytester</string>
+    <string name="app_name">CybersecurityTestingSupport</string>
     <string name="float_panel_drag_handle">功能\n（拖曳移動）</string>
+    <string name="capture_notification_title">CybersecurityTestingSupport 擷取</string>
 </resources>

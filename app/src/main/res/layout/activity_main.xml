@@ -9,7 +9,7 @@
         android:id="@+id/btnRequestPermission"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="請求權限(請同意Overlaytester覆蓋的權限)" />
+        android:text="請求權限(請同意覆蓋權限)" />
 
     <Space android:layout_height="12dp" android:layout_width="match_parent"/>
 
